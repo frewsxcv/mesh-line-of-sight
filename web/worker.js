@@ -5,7 +5,8 @@ const HDR = 16;
 const STRIDE = 4;
 const MAX_SAMPLES = 8192;
 const CONCURRENCY = 8;
-const MODES = { margin: 0, los: 1, count: 2 };
+const MODES = { margin: 0, los: 1, count: 2, sites: 3 };
+const MAX_MASK_SITES = 32;
 
 let wasm = null;
 let dem = null;
@@ -143,13 +144,23 @@ const handlers = {
     let i = 0;
     for (const site of sites) {
       const [gx, gy] = lonLatToPx(site.lon, site.lat, dem.zoom);
+      const [r, g, b] = site.rgb;
+      wasm.set_site_color(i, r, g, b);
       wasm.coverage_add(
         gx, gy, site.h, rxHeight, radiusM, radio.freq, radio.k, radio.clutter,
-        radio.txPower + site.gain - radio.cableLoss, rxGain, sens
+        radio.txPower + site.gain - radio.cableLoss, rxGain, sens, i
       );
       progress({ done: ++i, total: sites.length });
     }
-    return render(mode);
+    const raw = new Float64Array(wasm.memory.buffer, wasm.coverage_areas(), 66);
+    const tracked = Math.min(sites.length, MAX_MASK_SITES);
+    const areas = {
+      covered: Array.from(raw.slice(0, tracked)),
+      unique: Array.from(raw.slice(32, 32 + tracked)),
+      union: raw[64],
+      overlap: raw[65],
+    };
+    return { ...(await render(mode)), areas };
   },
 
   async terrain({ mode }) {

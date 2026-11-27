@@ -25,6 +25,9 @@ struct State {
     best_margin: Vec<f32>,
     best_short: Vec<f32>,
     count: Vec<u8>,
+    mask: Vec<u32>,
+    site_colors: [[u8; 3]; 32],
+    areas: Vec<f64>,
     s_margin: Vec<f32>,
     s_short: Vec<f32>,
     rgba: Vec<u8>,
@@ -107,6 +110,7 @@ impl State {
             self.best_margin = vec![UNSET_MARGIN; n];
             self.best_short = vec![UNSET_SHORT; n];
             self.count = vec![0; n];
+            self.mask = vec![0; n];
             self.s_margin = vec![UNSET_MARGIN; n];
             self.s_short = vec![UNSET_SHORT; n];
             self.rgba = vec![0; n * 4];
@@ -230,6 +234,7 @@ pub extern "C" fn dem_init(w: usize, h: usize, zoom: u32, ox: f64, oy: f64) -> *
     s.best_margin = Vec::new();
     s.best_short = Vec::new();
     s.count = Vec::new();
+    s.mask = Vec::new();
     s.s_margin = Vec::new();
     s.s_short = Vec::new();
     s.rgba = Vec::new();
@@ -369,6 +374,7 @@ pub extern "C" fn coverage_reset() {
     s.best_margin.fill(UNSET_MARGIN);
     s.best_short.fill(UNSET_SHORT);
     s.count.fill(0);
+    s.mask.fill(0);
 }
 
 #[no_mangle]
@@ -384,6 +390,7 @@ pub extern "C" fn coverage_add(
     eirp_dbm: f64,
     rx_gain_db: f64,
     sens_dbm: f64,
+    site_index: u32,
 ) -> i32 {
     let s = st();
     if s.dem.is_empty() {
@@ -452,6 +459,9 @@ pub extern "C" fn coverage_add(
             }
             if m >= 0.0 {
                 s.count[i] = s.count[i].saturating_add(1);
+                if site_index < 32 {
+                    s.mask[i] |= 1 << site_index;
+                }
             }
         }
     }
@@ -495,6 +505,18 @@ pub extern "C" fn coverage_rgba(mode: u32) -> *const u8 {
                 2 => [37, 99, 235, 160],
                 _ => [30, 27, 160, 185],
             },
+            3 => {
+                let mask = s.mask[i];
+                match mask.count_ones() {
+                    0 => [0, 0, 0, 0],
+                    1 => {
+                        let [r, g, b] = s.site_colors[mask.trailing_zeros() as usize];
+                        [r, g, b, 175]
+                    }
+                    2 => [115, 115, 115, 120],
+                    _ => [60, 60, 60, 150],
+                }
+            }
             _ => {
                 let m = s.best_margin[i];
                 if m >= 20.0 {
@@ -632,4 +654,44 @@ pub extern "C" fn terrain_rgba(mode: u32, azimuth_deg: f64, altitude_deg: f64, e
         }
     }
     s.shade.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn set_site_color(index: u32, r: u32, g: u32, b: u32) {
+    if index < 32 {
+        st().site_colors[index as usize] = [r as u8, g as u8, b as u8];
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn coverage_areas() -> *const f64 {
+    let s = st();
+    s.areas = vec![0.0; 66];
+    if s.dem.is_empty() || s.mask.len() != s.w * s.h {
+        return s.areas.as_ptr();
+    }
+    for y in 0..s.h {
+        let mpp = s.meters_per_px(s.oy + y as f64 + 0.5);
+        let cell = mpp * mpp;
+        for x in 0..s.w {
+            let mut mask = s.mask[y * s.w + x];
+            if mask == 0 {
+                continue;
+            }
+            let n = mask.count_ones();
+            s.areas[64] += cell;
+            if n >= 2 {
+                s.areas[65] += cell;
+            }
+            while mask != 0 {
+                let bit = mask.trailing_zeros() as usize;
+                s.areas[bit] += cell;
+                if n == 1 {
+                    s.areas[32 + bit] += cell;
+                }
+                mask &= mask - 1;
+            }
+        }
+    }
+    s.areas.as_ptr()
 }

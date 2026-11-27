@@ -165,6 +165,17 @@ function heightText(meters, digits = 0) {
   return `${heightNumber(meters, digits)} ${unit('height').label}`;
 }
 
+function areaText(squareMeters) {
+  const isMetric = state.settings.units === 'metric';
+  const value = squareMeters / (isMetric ? 1e6 : 2589988.11);
+  return `${fmt(value, value < 10 ? 1 : 0)} ${isMetric ? 'km²' : 'mi²'}`;
+}
+
+function hexToRgb(hex) {
+  const n = Number.parseInt(hex.replace('#', ''), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
 function distanceText(meters, digits = 1) {
   return `${fmt(meters * unit('distance').perMeter, digits)} ${unit('distance').label}`;
 }
@@ -187,11 +198,14 @@ const state = {
   selectedLinkKey: null,
   selectedPointId: null,
   isAdding: false,
+  isDownloading: false,
   profile: null,
   coverageKey: null,
   coverageMode: null,
   coverageUrl: null,
   coverageStats: null,
+  coverageSites: null,
+  coverageAreas: null,
 };
 
 const worker = new Worker(`worker.js?v=${Date.now()}`);
@@ -211,10 +225,48 @@ worker.onmessage = (e) => {
   else entry.resolve(msg.result);
 };
 
+const ACTIVITY_LABELS = {
+  loadDem: 'Downloading elevation',
+  links: 'Analyzing links',
+  coverage: 'Computing coverage',
+  colorize: 'Updating coverage colours',
+  terrain: 'Drawing terrain',
+};
+const activities = new Map();
+let activityTimer = null;
+
+function renderActivity() {
+  clearTimeout(activityTimer);
+  const pill = $('activity');
+  if (!activities.size) {
+    pill.hidden = true;
+    return;
+  }
+  const [first, ...rest] = activities.values();
+  $('activityText').textContent = `${first.text}…${rest.length ? ` (+${rest.length} queued)` : ''}`;
+  if (pill.hidden) activityTimer = setTimeout(() => (pill.hidden = !activities.size), 150);
+}
+
 function call(cmd, args = {}, onProgress = null) {
   return new Promise((resolve, reject) => {
     const id = ++requestId;
-    pending.set(id, { resolve, reject, onProgress });
+    const label = ACTIVITY_LABELS[cmd];
+    if (label) {
+      activities.set(id, { text: label });
+      renderActivity();
+    }
+    const finish = (fn) => (value) => {
+      if (activities.delete(id)) renderActivity();
+      fn(value);
+    };
+    const progress = (p) => {
+      if (label && p.total > 1) {
+        activities.set(id, { text: `${label} · ${p.done} / ${p.total}` });
+        renderActivity();
+      }
+      onProgress?.(p);
+    };
+    pending.set(id, { resolve: finish(resolve), reject: finish(reject), onProgress: progress });
     worker.postMessage({ id, cmd, ...args });
   });
 }
@@ -404,6 +456,7 @@ function renderPointList() {
         oninput: (e) => {
           updatePoint(p.id, { name: e.target.value }, { shouldAnalyze: false });
           renderLinks();
+          renderLegend();
         },
       }),
       el('div', { class: 'actions' }, [
@@ -489,14 +542,13 @@ function setProgress(barId, fraction) {
 }
 
 async function downloadDem(bbox, zoom, { isQuiet = false } = {}) {
-  const btn = $('downloadBtn');
-  btn.disabled = true;
-  btn.textContent = 'Downloading…';
+  state.isDownloading = true;
+  renderDemFreshness();
   setProgress('demProgress', 0);
   try {
     const info = await call('loadDem', { bbox, zoom }, (p) => {
       setProgress('demProgress', p.done / p.total);
-      $('demStatus').textContent = `Tile ${p.done} of ${p.total}${p.cached ? ` (${p.cached} cached)` : ''}${p.failed ? ` · ${p.failed} failed` : ''}`;
+      $('demState').textContent = `Downloading tile ${p.done} of ${p.total}${p.cached ? ` (${p.cached} from cache)` : ''}${p.failed ? ` · ${p.failed} failed` : ''}…`;
     });
     state.dem = { ...info, id: ++state.demCounter };
     state.coverageKey = null;
@@ -507,11 +559,14 @@ async function downloadDem(bbox, zoom, { isQuiet = false } = {}) {
     updateTerrain();
     if (!isQuiet && state.points.length === 0) map.fitBounds(demBounds());
     scheduleAnalysis(0);
+    state.isDownloading = false;
+    renderDemFreshness();
   } catch (err) {
-    $('demStatus').textContent = `Could not load elevation: ${err.message}`;
+    state.isDownloading = false;
+    renderDemFreshness();
+    $('demState').dataset.status = 'error';
+    $('demState').textContent = `Could not load elevation: ${err.message}`;
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Download elevation for area';
     setProgress('demProgress', null);
   }
 }
@@ -520,7 +575,7 @@ function renderDemStatus() {
   const info = state.dem;
   if (!info) return;
   const failed = info.failed ? ` · ${info.failed} tiles failed (filled as sea level)` : '';
-  $('demStatus').textContent = `${info.tiles} tiles (${info.cached} from cache) · ${info.w}×${info.h} cells · ~${heightText(info.metersPerCell)} per cell${failed}`;
+  $('demStatus').textContent = `Loaded: ${info.tiles} tiles (${info.cached} from cache) · ${info.w}×${info.h} cells · ~${heightText(info.metersPerCell)} per cell${failed}`;
 }
 
 function demBounds() {
@@ -545,20 +600,66 @@ function isInsideDem(p) {
   return p.lat <= b.north && p.lat >= b.south && p.lon <= b.east && p.lon >= b.west;
 }
 
-function updateDemWarning() {
-  const warn = $('demWarn');
-  if (!state.points.length) {
-    warn.hidden = true;
-    return;
+function bboxContains(outer, inner) {
+  const eps = 1e-6;
+  return (
+    inner.north <= outer.north + eps &&
+    inner.south >= outer.south - eps &&
+    inner.east <= outer.east + eps &&
+    inner.west >= outer.west - eps
+  );
+}
+
+function demFreshness() {
+  if (state.isDownloading) return { status: 'loading', reasons: [] };
+  if (!state.dem) return { status: 'none', reasons: [] };
+  const reasons = [];
+  if (state.dem.zoom !== state.settings.zoom) reasons.push('resolution changed');
+  if (state.points.length) {
+    const outside = state.points.filter((p) => !isInsideDem(p)).length;
+    if (outside) reasons.push(`${outside} point${outside === 1 ? ' is' : 's are'} outside the downloaded area`);
+    else if (!bboxContains(state.dem.bounds, areaBbox())) reasons.push('the radius extends past the downloaded area');
   }
-  if (!state.dem) {
-    warn.hidden = false;
-    warn.textContent = 'Download elevation data to analyze line of sight.';
-    return;
+  return { status: reasons.length ? 'stale' : 'fresh', reasons };
+}
+
+let neededRect = null;
+
+function renderDemFreshness() {
+  const { status, reasons } = demFreshness();
+  const node = $('demState');
+  const btn = $('downloadBtn');
+  node.dataset.status = status;
+  const texts = {
+    none: state.points.length
+      ? 'No elevation data yet. Download it to analyze your points.'
+      : 'No elevation data yet. Add points, or download the current view.',
+    loading: 'Downloading…',
+    fresh: state.points.length ? 'Up to date for your points and radius.' : 'Loaded for the area shown by the dashed box.',
+    stale: `Download needed: ${reasons.join('; ')}.`,
+  };
+  node.textContent = texts[status];
+  const labels = { none: 'Download elevation for area', loading: 'Downloading…', fresh: 'Re-download', stale: 'Download again' };
+  btn.textContent = labels[status];
+  btn.disabled = status === 'loading';
+  btn.classList.toggle('primary', status === 'none' || status === 'stale');
+
+  if (neededRect) {
+    map.removeLayer(neededRect);
+    neededRect = null;
   }
-  const outside = state.points.filter((p) => !isInsideDem(p)).length;
-  warn.hidden = outside === 0;
-  warn.textContent = `${outside} point${outside === 1 ? ' is' : 's are'} outside the elevation area. Download again to include ${outside === 1 ? 'it' : 'them'}.`;
+  if (status === 'stale' && state.points.length) {
+    const b = areaBbox();
+    neededRect = L.rectangle(
+      [
+        [b.south, b.west],
+        [b.north, b.east],
+      ],
+      { color: '#d97706', weight: 2, dashArray: '4 6', fill: false, interactive: false }
+    )
+      .bindTooltip('Area needed for your points and radius', { sticky: true })
+      .addTo(map);
+  }
 }
 
 
@@ -572,7 +673,7 @@ function scheduleAnalysis(delay = 250) {
 
 async function runAnalysis() {
   const seq = ++analysisSeq;
-  updateDemWarning();
+  renderDemFreshness();
   updateSensitivity();
   if (!state.dem) {
     state.links = [];
@@ -961,7 +1062,8 @@ function drawProfileHover(ctx, s, X, Y, pad, bottom, color) {
 
 
 async function updateCoverage(seq) {
-  const sites = state.points.filter((p) => p.shouldShowCoverage && state.ground.get(p.id) != null).map(siteOf);
+  const coveragePoints = state.points.filter((p) => p.shouldShowCoverage && state.ground.get(p.id) != null);
+  const sites = coveragePoints.map((p) => ({ ...siteOf(p), rgb: hexToRgb(p.color) }));
   if (!sites.length) {
     removeCoverage();
     $('covStatus').textContent = 'Tick “Coverage” on at least one point inside the elevation area.';
@@ -993,8 +1095,11 @@ async function updateCoverage(seq) {
       setProgress('covProgress', null);
     }
     state.coverageKey = key;
+    state.coverageSites = coveragePoints.map((p) => p.id);
+    state.coverageAreas = result.areas;
     state.coverageStats = { count: sites.length, radiusM: params.radiusM, seconds: (performance.now() - started) / 1000 };
     renderCoverageStatus();
+    renderLegend();
   }
   state.coverageMode = mode;
   if (seq !== analysisSeq || !state.settings.showCoverage) return;
@@ -1080,12 +1185,57 @@ function removeCoverage() {
 }
 
 function renderLegend() {
+  const isSiteMode = state.settings.covMode === 'sites';
+  $('siteStats').hidden = !isSiteMode;
+  if (isSiteMode) {
+    renderSiteLegend();
+    return;
+  }
   const items = LEGENDS[state.settings.covMode] ?? [];
   $('legend').replaceChildren(
     ...items.map(([bg, label]) =>
       el('span', {}, [el('i', { style: { background: bg } }), typeof label === 'function' ? label() : label])
     )
   );
+}
+
+function renderSiteLegend() {
+  $('legend').replaceChildren(
+    el('span', {}, [el('i', { style: { background: 'rgba(115,115,115,0.5)' } }), 'Overlap (2)']),
+    el('span', {}, [el('i', { style: { background: 'rgba(60,60,60,0.6)' } }), 'Overlap (3+)'])
+  );
+  const areas = state.coverageAreas;
+  const ids = state.coverageSites;
+  const tbody = $('siteStats').querySelector('tbody');
+  if (!areas || !ids) {
+    tbody.replaceChildren(el('tr', {}, el('td', { colSpan: 3, class: 'muted', text: 'Turn on the overlay to compute coverage.' })));
+    return;
+  }
+  const rows = ids.map((id, i) => {
+    const p = state.points.find((x) => x.id === id);
+    if (!p || i >= areas.covered.length) return null;
+    return el('tr', {}, [
+      el('td', {}, [el('i', { class: 'swatch', style: { background: p.color } }), p.name]),
+      el('td', { text: areaText(areas.unique[i]) }),
+      el('td', { text: areaText(areas.covered[i]) }),
+    ]);
+  });
+  tbody.replaceChildren(
+    ...rows.filter(Boolean),
+    el('tr', { class: 'subtotal' }, [
+      el('td', { text: 'Overlap' }),
+      el('td', { text: areaText(areas.overlap) }),
+      el('td', { text: '' }),
+    ]),
+    el('tr', { class: 'subtotal' }, [
+      el('td', { text: 'All sites' }),
+      el('td', { text: '' }),
+      el('td', { text: areaText(areas.union) }),
+    ])
+  );
+  if (ids.length > areas.covered.length) {
+    tbody.append(el('tr', {}, el('td', { colSpan: 3, class: 'muted', text: `Only the first ${areas.covered.length} sites get their own colour.` })));
+  }
 }
 
 
@@ -1183,7 +1333,10 @@ function onSettingChanged(key) {
   }
   if (key === 'covMode') renderLegend();
   if (key === 'network') showNetworkFields();
-  if (key === 'zoom') return;
+  if (key === 'zoom') {
+    renderDemFreshness();
+    return;
+  }
   if (VIEW_ONLY_SETTINGS.has(key)) return;
   scheduleAnalysis();
 }

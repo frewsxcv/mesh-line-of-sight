@@ -5,7 +5,7 @@ A browser tool for planning MeshCore and Meshtastic (LoRa) nodes. Place points, 
 - **Links** between every pair of points: distance, whether terrain blocks the path, Fresnel zone clearance, diffraction loss and estimated link margin.
 - **Elevation profile** for any link (click it), with earth curvature, line of sight, the first Fresnel zone and obstructions.
 - **Terrain view**: hillshade or color relief drawn from the downloaded elevation data.
-- **Coverage overlay**: where a handheld receiver could hear your repeaters, as estimated link margin, pure line of sight, or the number of repeaters reaching each spot.
+- **Coverage overlay**: where a handheld receiver could hear your repeaters, as estimated link margin, pure line of sight, the number of sites reaching each spot, or unique area per site: each node's own colour where only it reaches and grey where nodes overlap, with a table of each node's unique and total area.
 
 The terrain math runs in WebAssembly (Rust, no dependencies) inside a Web Worker.
 

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Mesh Line of Sight</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=6">
+  <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
   <aside id="sidebar">
@@ -56,6 +56,7 @@
           </select>
         </label>
       </div>
+      <p id="demState" class="dem-state small" data-status="none" role="status"></p>
       <button id="downloadBtn" class="primary wide" type="button">Download elevation for area</button>
       <div class="grid2">
         <label>Terrain view
@@ -68,8 +69,7 @@
         <label>Terrain opacity<input type="range" min="0.1" max="1" step="0.05" data-setting="terrainOpacity"></label>
       </div>
       <div id="demProgress" class="progress" hidden><div></div></div>
-      <p id="demStatus" class="muted small">Covers every point plus the radius (or the current view if there are no points). Tiles are cached in your browser for offline reuse.</p>
-      <p id="demWarn" class="warn small" hidden></p>
+      <p id="demStatus" class="muted small">Downloads cover every point plus the radius (or the current view if there are no points). Tiles are cached in your browser for offline reuse.</p>
       <button id="clearCacheBtn" type="button" class="link">Clear tile cache</button>
     </section>
 
@@ -115,6 +115,7 @@
           <select data-setting="covMode">
             <option value="margin">Estimated link margin</option>
             <option value="los">Geometric line of sight</option>
+            <option value="sites">Unique area per site</option>
             <option value="count">Sites reaching (margin ≥ 0)</option>
           </select>
         </label>
@@ -123,6 +124,11 @@
         <label>Receiver gain (dBi)<input type="number" step="0.5" data-setting="rxGain"></label>
       </div>
       <div id="legend" class="legend"></div>
+      <table id="siteStats" class="site-stats" hidden>
+        <caption class="muted small">Area each site reaches with link margin ≥ 0 dB</caption>
+        <thead><tr><th scope="col">Site</th><th scope="col">Only this site</th><th scope="col">Total</th></tr></thead>
+        <tbody></tbody>
+      </table>
       <div id="covProgress" class="progress" hidden><div></div></div>
       <p id="covStatus" class="muted small">Computed for points with the coverage box ticked, out to the area radius.</p>
     </section>
@@ -146,6 +152,7 @@
 
   <main id="mapWrap">
     <div id="map"></div>
+    <div id="activity" class="activity" role="status" hidden><span class="spinner"></span><span id="activityText"></span></div>
     <div id="addHint" class="map-hint" hidden>Click the map to add a point. Press Esc to stop.</div>
     <section id="profile" hidden>
       <div class="profile-head">
@@ -163,6 +170,6 @@
   </main>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js?v=6" type="module"></script>
+  <script src="app.js?v=8" type="module"></script>
 </body>
 </html>
