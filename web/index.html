@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mesh Line of Sight</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="style.css?v=6">
+</head>
+<body>
+  <aside id="sidebar">
+    <header class="brand">
+      <div class="brand-row">
+        <h1>Mesh Line of Sight</h1>
+        <div class="segmented compact" role="radiogroup" aria-label="Units">
+          <label><input type="radio" name="units" value="imperial" data-setting="units"><span>ft / mi</span></label>
+          <label><input type="radio" name="units" value="metric" data-setting="units"><span>m / km</span></label>
+        </div>
+      </div>
+      <p class="muted">Terrain line of sight and estimated reach for MeshCore and Meshtastic nodes.</p>
+    </header>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Points</h2>
+        <div class="row-gap">
+          <button id="addModeBtn" class="primary" type="button">+ Add on map</button>
+        </div>
+      </div>
+      <form id="coordForm" class="inline-form">
+        <input id="coordInput" placeholder="lat, lon  (e.g. 40.7128, -74.006)" autocomplete="off">
+        <button type="submit">Add</button>
+      </form>
+      <div id="pointList" class="point-list"></div>
+      <p id="pointsEmpty" class="muted small">No points yet. Click <b>+ Add on map</b>, then click the map. Drag markers to move them.</p>
+      <div class="row-gap wrap">
+        <button id="fitBtn" type="button">Zoom to points</button>
+        <button id="exportBtn" type="button">Export</button>
+        <label class="button-like">Import<input id="importInput" type="file" accept="application/json" hidden></label>
+        <button id="clearBtn" type="button" class="danger-text">Clear all</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Elevation data</h2>
+      <div class="grid2">
+        <label><span>Area radius (<span data-unit-label="distance">mi</span>)</span>
+          <input id="radiusKm" type="number" min="1" max="300" step="any" data-setting="radiusKm">
+        </label>
+        <label>Resolution
+          <select id="zoom" data-setting="zoom">
+            <option value="10" data-name="Coarse" data-cell-m="120">Coarse (~120 m)</option>
+            <option value="11" data-name="Medium" data-cell-m="60">Medium (~60 m)</option>
+            <option value="12" data-name="Fine" data-cell-m="30">Fine (~30 m)</option>
+            <option value="13" data-name="Very fine" data-cell-m="15">Very fine (~15 m)</option>
+          </select>
+        </label>
+      </div>
+      <button id="downloadBtn" class="primary wide" type="button">Download elevation for area</button>
+      <div class="grid2">
+        <label>Terrain view
+          <select data-setting="terrainMode">
+            <option value="shade">Hillshade</option>
+            <option value="relief">Color relief</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <label>Terrain opacity<input type="range" min="0.1" max="1" step="0.05" data-setting="terrainOpacity"></label>
+      </div>
+      <div id="demProgress" class="progress" hidden><div></div></div>
+      <p id="demStatus" class="muted small">Covers every point plus the radius (or the current view if there are no points). Tiles are cached in your browser for offline reuse.</p>
+      <p id="demWarn" class="warn small" hidden></p>
+      <button id="clearCacheBtn" type="button" class="link">Clear tile cache</button>
+    </section>
+
+    <section class="card">
+      <h2>Network</h2>
+      <div class="segmented" role="radiogroup" aria-label="Mesh network">
+        <label><input type="radio" name="network" value="meshcore" data-setting="network"><span>MeshCore</span></label>
+        <label><input type="radio" name="network" value="meshtastic" data-setting="network"><span>Meshtastic</span></label>
+      </div>
+      <label data-network="meshcore">Radio preset
+        <select id="meshcorePreset" data-setting="meshcorePreset"></select>
+      </label>
+      <div class="grid2" data-network="meshtastic">
+        <label>Modem preset
+          <select id="meshtasticPreset" data-setting="meshtasticPreset"></select>
+        </label>
+        <label>Region
+          <select id="meshtasticRegion" data-setting="meshtasticRegion"></select>
+        </label>
+      </div>
+      <p id="radioSummary" class="muted small"></p>
+      <div class="grid2">
+        <label>Device TX power (dBm)<input type="number" step="1" data-setting="txPower"></label>
+        <label>Default antenna gain (dBi)<input type="number" step="0.5" data-setting="defaultGain"></label>
+      </div>
+      <details>
+        <summary>Advanced</summary>
+        <div class="grid2">
+          <label>Cable loss (dB)<input type="number" step="0.5" min="0" data-setting="cableLoss"></label>
+          <label>Extra loss (dB)<input type="number" step="1" min="0" data-setting="extraLoss"></label>
+          <label>k-factor<input type="number" step="0.01" min="0.5" max="4" data-setting="k"></label>
+          <label><span>Clutter (<span data-unit-label="height">ft</span>)</span><input type="number" step="any" min="0" data-setting="clutter"></label>
+        </div>
+        <p class="muted small">Most SX1262 boards transmit at 22 dBm. Clutter adds height to the terrain for trees or buildings the elevation data leaves out; it is not applied within 50 m (160 ft) of either end. Extra loss is subtracted from every link margin, so you can calibrate against links you know work. k = 4/3 models normal atmospheric refraction.</p>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>Coverage</h2>
+      <label class="check"><input type="checkbox" data-setting="showCoverage"> Show coverage overlay</label>
+      <div class="grid2">
+        <label>View
+          <select data-setting="covMode">
+            <option value="margin">Estimated link margin</option>
+            <option value="los">Geometric line of sight</option>
+            <option value="count">Sites reaching (margin ≥ 0)</option>
+          </select>
+        </label>
+        <label>Opacity<input type="range" min="0.1" max="1" step="0.05" data-setting="covOpacity"></label>
+        <label><span>Receiver height (<span data-unit-label="height">ft</span>)</span><input type="number" step="any" min="0" data-setting="rxHeight"></label>
+        <label>Receiver gain (dBi)<input type="number" step="0.5" data-setting="rxGain"></label>
+      </div>
+      <div id="legend" class="legend"></div>
+      <div id="covProgress" class="progress" hidden><div></div></div>
+      <p id="covStatus" class="muted small">Computed for points with the coverage box ticked, out to the area radius.</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Links</h2>
+        <label class="check small"><input type="checkbox" data-setting="showBlocked"> Show failed links</label>
+      </div>
+      <table id="linkTable" class="link-table">
+        <thead><tr><th>Link</th><th data-unit-label="distance">mi</th><th>Path</th><th>Margin</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="linksEmpty" class="muted small">Add two or more points and download elevation data to see links.</p>
+    </section>
+
+    <footer class="muted small">
+      Elevation: AWS Terrain Tiles (SRTM, USGS NED, GMTED, ETOPO1). Estimates only: free-space loss plus knife-edge diffraction. Real-world range varies with foliage, buildings and noise.
+    </footer>
+  </aside>
+
+  <main id="mapWrap">
+    <div id="map"></div>
+    <div id="addHint" class="map-hint" hidden>Click the map to add a point. Press Esc to stop.</div>
+    <section id="profile" hidden>
+      <div class="profile-head">
+        <div>
+          <strong id="profileTitle"></strong>
+          <span id="profileSummary" class="muted"></span>
+        </div>
+        <button id="profileClose" type="button" aria-label="Close profile">✕</button>
+      </div>
+      <div class="profile-body">
+        <canvas id="profileCanvas"></canvas>
+        <div id="profileTip" class="profile-tip" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js?v=6" type="module"></script>
+</body>
+</html>
